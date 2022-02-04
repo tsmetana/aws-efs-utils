@@ -46,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -212,6 +213,7 @@ UNSUPPORTED_OPTIONS = [
 STUNNEL_GLOBAL_CONFIG = {
     'fips': 'no',
     'foreground': 'yes',
+    'pid': '',
     'socket': [
         'l:SO_REUSEADDR=yes',
         'a:SO_BINDTODEVICE=lo',
@@ -223,6 +225,7 @@ STUNNEL_EFS_CONFIG = {
     'accept': '127.0.0.1:%s',
     'connect': '%s:2049',
     'sslVersion': 'TLSv1.2',
+    'ciphers': 'TLSv1.2',
     'renegotiation': 'no',
     'TIMEOUTbusy': '20',
     'TIMEOUTclose': '0',
@@ -237,14 +240,16 @@ SYSTEM_RELEASE_PATH = '/etc/system-release'
 OS_RELEASE_PATH = '/etc/os-release'
 RHEL8_RELEASE_NAME = 'Red Hat Enterprise Linux release 8'
 CENTOS8_RELEASE_NAME = 'CentOS Linux release 8'
+CENTOS_STREAM8_RELEASE_NAME = 'CentOS Stream release 8'
 ORACLE_RELEASE_NAME = 'Oracle Linux Server release 8'
 FEDORA_RELEASE_NAME = 'Fedora release'
 OPEN_SUSE_LEAP_RELEASE_NAME = 'openSUSE Leap'
 SUSE_RELEASE_NAME = 'SUSE Linux Enterprise Server'
 MACOS_BIG_SUR_RELEASE = 'macOS-11'
 
-SKIP_NO_LIBWRAP_RELEASES = [RHEL8_RELEASE_NAME, CENTOS8_RELEASE_NAME, FEDORA_RELEASE_NAME, OPEN_SUSE_LEAP_RELEASE_NAME,
-                            SUSE_RELEASE_NAME, MACOS_BIG_SUR_RELEASE, ORACLE_RELEASE_NAME]
+SKIP_NO_LIBWRAP_RELEASES = [RHEL8_RELEASE_NAME, CENTOS8_RELEASE_NAME, CENTOS_STREAM8_RELEASE_NAME,
+                            FEDORA_RELEASE_NAME, OPEN_SUSE_LEAP_RELEASE_NAME, SUSE_RELEASE_NAME,
+                            MACOS_BIG_SUR_RELEASE, ORACLE_RELEASE_NAME]
 
 # Multiplier for max read ahead buffer size
 # Set default as 15 aligning with prior linux kernel 5.4
@@ -742,6 +747,9 @@ def get_resp_obj(request_resp, url, unsuccessful_resp):
 
         return resp_dict
     except ValueError as e:
+        for line in traceback.format_stack():
+            print(line.strip())
+        logging.info('Error parsing "%s as %s"' % (str(resp_body), request_resp.headers.get_content_charset() or 'us-ascii'))
         logging.info('ValueError parsing "%s" into json: %s. Returning response body.' % (str(resp_body), e))
         return resp_body if resp_body_type is str else resp_body.decode('utf-8')
 
@@ -1036,9 +1044,11 @@ def test_tunnel_process(tunnel_proc, fs_id):
     tunnel_proc.poll()
     if tunnel_proc.returncode is not None:
         out, err = tunnel_proc.communicate()
+        stdstr = out.strip() if out != None else '<none>'
+        errstr = err.strip() if err != None else '<none>'
         fatal_error('Failed to initialize TLS tunnel for %s' % fs_id,
                     'Failed to start TLS tunnel (errno=%d). stdout="%s" stderr="%s"'
-                    % (tunnel_proc.returncode, out.strip(), err.strip()))
+                    % (tunnel_proc.returncode, stdstr, errstr))
 
 
 def poll_tunnel_process(tunnel_proc, fs_id, mount_completed):
@@ -1047,11 +1057,11 @@ def poll_tunnel_process(tunnel_proc, fs_id, mount_completed):
     from the main thread, if the tunnel fails, exit uncleanly with os._exit
     """
     while not mount_completed.is_set():
+        mount_completed.wait(.5)
         try:
             test_tunnel_process(tunnel_proc, fs_id)
         except SystemExit as e:
             os._exit(e.code)
-        mount_completed.wait(.5)
 
 
 def get_init_system(comm_file='/proc/1/comm'):
