@@ -235,6 +235,7 @@ UNSUPPORTED_OPTIONS = ["capath"]
 STUNNEL_GLOBAL_CONFIG = {
     "fips": "no",
     "foreground": "yes",
+    "debug": "debug",
     "socket": [
         "l:SO_REUSEADDR=yes",
         "a:SO_BINDTODEVICE=lo",
