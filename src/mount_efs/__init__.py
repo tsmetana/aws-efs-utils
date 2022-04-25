@@ -929,7 +929,7 @@ def get_tls_port_range(config):
     return lower_bound, upper_bound
 
 
-def choose_tls_port(config, options):
+def choose_tls_port(state_file_dir, fs_id, mountpoint, config, options):
     if "tlsport" in options:
         ports_to_try = [int(options["tlsport"])]
     else:
@@ -944,13 +944,13 @@ def choose_tls_port(config, options):
         assert len(tls_ports) == len(ports_to_try)
 
     if "netns" not in options:
-        tls_port = find_tls_port_in_range(ports_to_try)
+        sock = find_tls_port_in_range(state_file_dir, fs_id, mountpoint, ports_to_try)
     else:
         with NetNS(nspath=options["netns"]):
-            tls_port = find_tls_port_in_range(ports_to_try)
+            sock = find_tls_port_in_range(state_file_dir, fs_id, mountpoint, ports_to_try)
 
-    if tls_port:
-        return tls_port
+    if sock:
+        return sock
 
     if "tlsport" in options:
         fatal_error(
@@ -964,14 +964,18 @@ def choose_tls_port(config, options):
         )
 
 
-def find_tls_port_in_range(ports_to_try):
+def find_tls_port_in_range(state_file_dir, fs_id, mountpoint, ports_to_try):
     sock = socket.socket()
     for tls_port in ports_to_try:
+        mount_filename = get_mount_specific_filename(fs_id, mountpoint, tls_port)
+        config_file = get_stunnel_config_filename(state_file_dir, mount_filename)
+        if os.access(config_file, os.R_OK):
+            logging.info("confifguration for port %s already exists, trying another port", tls_port)
+            continue
         try:
             logging.info("binding %s", tls_port)
             sock.bind(("localhost", tls_port))
-            sock.close()
-            return tls_port
+            return sock
         except socket.error as e:
             logging.info(e)
             continue
@@ -1219,9 +1223,7 @@ def write_stunnel_config_file(
     )
     logging.debug("Writing stunnel configuration:\n%s", stunnel_config)
 
-    stunnel_config_file = os.path.join(
-        state_file_dir, "stunnel-config.%s" % mount_filename
-    )
+    stunnel_config_file = get_stunnel_config_filename(state_file_dir, mount_filename)
 
     with open(stunnel_config_file, "w") as f:
         f.write(stunnel_config)
@@ -1419,6 +1421,10 @@ def create_required_directory(config, directory):
             raise
 
 
+def get_stunnel_config_filename(state_file_dir, mount_filename):
+    return os.path.join(state_file_dir, "stunnel-config.%s" % mount_filename)
+
+
 @contextmanager
 def bootstrap_tls(
     config,
@@ -1430,7 +1436,8 @@ def bootstrap_tls(
     state_file_dir=STATE_FILE_DIR,
     fallback_ip_address=None,
 ):
-    tls_port = choose_tls_port(config, options)
+    sock = choose_tls_port(state_file_dir, fs_id, mountpoint, config, options)
+    tls_port = sock.getsockname()[1]
     # override the tlsport option so that we can later override the port the NFS client uses to connect to stunnel.
     # if the user has specified tlsport=X at the command line this will just re-set tlsport to X.
     options["tlsport"] = tls_port
@@ -1506,6 +1513,8 @@ def bootstrap_tls(
         cert_details=cert_details,
         fallback_ip_address=fallback_ip_address,
     )
+    # close the socket now, so the stunnel process can bind to the port
+    sock.close()
     tunnel_args = [_stunnel_bin(), stunnel_config_file]
     if "netns" in options:
         tunnel_args = ["nsenter", "--net=" + options["netns"]] + tunnel_args
