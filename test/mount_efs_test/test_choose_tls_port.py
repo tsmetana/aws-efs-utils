@@ -4,11 +4,13 @@
 # for the specific language governing permissions and limitations under
 # the License.
 
+import random
 import socket
+from unittest.mock import MagicMock
+
+import pytest
 
 import mount_efs
-import pytest
-from mock import MagicMock
 
 from .. import utils
 
@@ -18,7 +20,10 @@ except ImportError:
     from configparser import ConfigParser
 
 DEFAULT_TLS_PORT_RANGE_LOW = 20049
-DEFAULT_TLS_PORT_RANGE_HIGH = 20449
+DEFAULT_TLS_PORT_RANGE_HIGH = 21049
+DEFAULT_TLS_PORT = random.randrange(
+    DEFAULT_TLS_PORT_RANGE_LOW, DEFAULT_TLS_PORT_RANGE_HIGH
+)
 
 
 def _get_config():
@@ -41,25 +46,30 @@ def _get_config():
 
 
 def test_choose_tls_port_first_try(mocker):
-    mocker.patch("socket.socket", return_value=MagicMock())
+    sock_mock = MagicMock()
+    sock_mock.getsockname.return_value = ("local_host", DEFAULT_TLS_PORT)
+    mocker.patch("socket.socket", return_value=sock_mock)
     options = {}
 
-    tls_port = mount_efs.choose_tls_port(_get_config(), options)
-
+    tls_port_sock = mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
+    tls_port = mount_efs.get_tls_port_from_sock(tls_port_sock)
     assert DEFAULT_TLS_PORT_RANGE_LOW <= tls_port <= DEFAULT_TLS_PORT_RANGE_HIGH
 
 
 def test_choose_tls_port_second_try(mocker):
     bad_sock = MagicMock()
     bad_sock.bind.side_effect = [socket.error, None]
+    bad_sock.getsockname.return_value = ("local_host", DEFAULT_TLS_PORT)
     options = {}
 
     mocker.patch("socket.socket", return_value=bad_sock)
 
-    tls_port = mount_efs.choose_tls_port(_get_config(), options)
+    tls_port_sock = mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
+    tls_port = mount_efs.get_tls_port_from_sock(tls_port_sock)
 
     assert DEFAULT_TLS_PORT_RANGE_LOW <= tls_port <= DEFAULT_TLS_PORT_RANGE_HIGH
     assert 2 == bad_sock.bind.call_count
+    assert 1 == bad_sock.getsockname.call_count
 
 
 def test_choose_tls_port_never_succeeds(mocker, capsys):
@@ -70,7 +80,7 @@ def test_choose_tls_port_never_succeeds(mocker, capsys):
     mocker.patch("socket.socket", return_value=bad_sock)
 
     with pytest.raises(SystemExit) as ex:
-        mount_efs.choose_tls_port(_get_config(), options)
+        mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
 
     assert 0 != ex.value.code
 
@@ -84,12 +94,15 @@ def test_choose_tls_port_never_succeeds(mocker, capsys):
 
 
 def test_choose_tls_port_option_specified(mocker):
-    mocker.patch("socket.socket", return_value=MagicMock())
-    options = {"tlsport": 1000}
+    sock_mock = MagicMock()
+    sock_mock.getsockname.return_value = ("local_host", DEFAULT_TLS_PORT)
+    mocker.patch("socket.socket", return_value=sock_mock)
+    options = {"tlsport": DEFAULT_TLS_PORT}
 
-    tls_port = mount_efs.choose_tls_port(_get_config(), options)
+    tls_port_sock = mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
+    tls_port = mount_efs.get_tls_port_from_sock(tls_port_sock)
 
-    assert 1000 == tls_port
+    assert DEFAULT_TLS_PORT == tls_port
 
 
 def test_choose_tls_port_option_specified_unavailable(mocker, capsys):
@@ -100,7 +113,7 @@ def test_choose_tls_port_option_specified_unavailable(mocker, capsys):
     mocker.patch("socket.socket", return_value=bad_sock)
 
     with pytest.raises(SystemExit) as ex:
-        mount_efs.choose_tls_port(_get_config(), options)
+        mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
 
     assert 0 != ex.value.code
 
@@ -116,7 +129,7 @@ def test_choose_tls_port_under_netns(mocker, capsys):
     mocker.patch("socket.socket", return_value=MagicMock())
     options = {"netns": "/proc/1000/ns/net"}
 
-    mount_efs.choose_tls_port(_get_config(), options)
+    mount_efs.choose_tls_port_and_get_bind_sock(_get_config(), options)
     utils.assert_called(setns_mock)
 
 
