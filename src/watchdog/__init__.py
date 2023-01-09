@@ -56,7 +56,7 @@ AMAZON_LINUX_2_RELEASE_VERSIONS = [
     AMAZON_LINUX_2_RELEASE_ID,
     AMAZON_LINUX_2_PRETTY_NAME,
 ]
-VERSION = "1.34.3"
+VERSION = "1.34.5"
 SERVICE = "elasticfilesystem"
 
 CONFIG_FILE = "/etc/amazon/efs/efs-utils.conf"
@@ -658,7 +658,18 @@ def get_current_local_nfs_mounts(mount_file="/proc/mounts"):
     if not check_if_running_on_macos():
         with open(mount_file) as f:
             for mount in f:
-                mounts.append(Mount._make(mount.strip().split()))
+                try:
+                    mounts.append(Mount._make(mount.strip().split()))
+                except Exception as e:
+                    # Make sure nfs mounts being skipped are made apparent
+                    if " nfs4 " in mount:
+                        logging.warning(
+                            'Watchdog ignoring malformed nfs4 mount "%s": %s', mount, e
+                        )
+                    else:
+                        logging.debug(
+                            'Watchdog ignoring malformed mount "%s": %s', mount, e
+                        )
     else:
         # stat command on MacOS does not have '--file-system' option to verify the filesystem type of a mount point,
         # traverse all the mounts, and find if current mount point is already mounted
@@ -1582,7 +1593,11 @@ def check_and_create_private_key(base_path=STATE_FILE_DIR):
 
     def generate_key():
         if os.path.isfile(key):
-            return
+            if os.path.getsize(key) == 0:
+                logging.info("Purging empty private key file")
+                os.remove(key)
+            else:
+                return
 
         cmd = (
             "openssl genpkey -algorithm RSA -out %s -pkeyopt rsa_keygen_bits:3072" % key
